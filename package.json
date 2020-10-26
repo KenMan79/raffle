@@ -37,6 +37,7 @@
     "test": "test"
   },
   "dependencies": {
+    "@chainlink/contracts": "0.0.10",
     "buidler-gas-reporter": "^0.1.4"
   }
 }

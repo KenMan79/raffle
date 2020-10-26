@@ -5,10 +5,16 @@ pragma experimental ABIEncoderV2;
 // import "hardhat/console.sol";
 
 import "./interfaces/IERC1155.sol";
+import "@chainlink/contracts/src/v0.6/VRFConsumerBase.sol";
 
 struct AppStorage {
     Raffle[] raffles;
+    //  mapping(uint256 => )
     address contractOwner;
+    //Chainlink
+    bytes32 keyHash;
+    uint256 fee;
+    mapping(uint256 => uint256) requestIdToRaffleId;
 }
 
 struct Raffle {
@@ -87,7 +93,7 @@ struct WinnerIO {
     uint256[] prizeValues;
 }
 
-contract RafflesContract {
+contract RafflesContract is VRFConsumerBase {
     AppStorage internal s;
     bytes4 internal constant ERC1155_ACCEPTED = 0xf23a6e61; // Return value from `onERC1155Received` call if a contract accepts receipt (i.e `bytes4(keccak256("onERC1155Received(address,address,uint256,uint256,bytes)"))`).
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -96,8 +102,18 @@ contract RafflesContract {
     event RaffleRandomNumber(uint256 indexed raffleId, uint256 randomNumber);
     event RaffleClaimPrize(uint256 indexed raffleId, address staker, address prizeAddress, uint256 prizeId, uint256 prizeValue);
 
-    constructor(address _contractOwner) {
+    constructor(
+        address _contractOwner,
+        address _vrfCoordinator,
+        address _link
+    ) public VRFConsumerBase(_vrfCoordinator, _link) {
         s.contractOwner = _contractOwner;
+
+        //Chainlink
+        vrfCoordinator = _vrfCoordinator;
+        LINK = LinkTokenInterface(_link);
+        keyHash = 0x0218141742245eeeba0660e61ef8767e6ce8e7215289a4d18616828caf4dfe33; // Ropsten details
+        fee = 10**18; // Ropsten details
     }
 
     function owner() external view returns (address) {
@@ -303,14 +319,44 @@ contract RafflesContract {
         }
     }
 
-    function drawRandomNumber(uint256 _raffleId) external {
+    function drawRandomNumber(uint256 _raffleId, uint256 userProvidedSeed) external {
         require(_raffleId < s.raffles.length, "Raffle: Raffle does not exist");
         Raffle storage raffle = s.raffles[_raffleId];
         require(raffle.raffleEnd < block.timestamp, "Raffle: Raffle time has not expired");
         require(raffle.randomNumber == 0, "Raffle: Random number already generated");
-        uint256 randomNumber = uint224(uint256(keccak256(abi.encodePacked(block.number))));
-        emit RaffleRandomNumber(_raffleId, randomNumber);
-        raffle.randomNumber = randomNumber;
+
+        //Use Chainlink VRF to generate random number
+        require(LINK.balanceOf(address(this)) > fee, "Not enough LINK - fill contract with faucet");
+        uint256 seed = uint256(keccak256(abi.encode(userProvidedSeed, blockhash(block.number)))); // Hash user seed and blockhash
+        bytes32 _requestId = requestRandomness(keyHash, fee, seed);
+
+        s.requestIdToRaffleId[_requestId] = _raffleId;
+        ///  return _requestId;
+
+        // uint256 randomNumber = uint224(uint256(keccak256(abi.encodePacked(block.number))));
+        //  emit RaffleRandomNumber(_raffleId, randomNumber);
+        //  raffle.randomNumber = randomNumber;
+    }
+
+    /**
+     * @notice Modifier to only allow updates by the VRFCoordinator contract
+     */
+    modifier onlyVRFCoordinator {
+        require(msg.sender == vrfCoordinator, "Fulfillment only allowed by VRFCoordinator");
+        _;
+    }
+
+    /**
+     * @notice Callback function used by VRF Coordinator
+     * @dev Important! Add a modifier to only allow this function to be called by the VRFCoordinator
+     * @dev This is where you do something with randomness!
+     * @dev The VRF Coordinator will only send this function verified responses.
+     * @dev The VRF Coordinator will not pass randomness that could not be verified.
+     */
+    function fulfillRandomness(bytes32 requestId, uint256 randomness) external override onlyVRFCoordinator {
+        uint256 raffleId_ = s.requestIdToRaffleId[requestId];
+        Raffle storage raffle = s.raffles[_raffleId];
+        raffle.randomNumber = randomness;
     }
 
     function winners(uint256 _raffleId) external view returns (WinnerIO[] memory winners_) {
@@ -452,5 +498,12 @@ contract RafflesContract {
                 }
             }
         }
+    }
+
+    /**
+     * @notice Convenience function to show the latest roll
+     */
+    function latestRoll() public view returns (uint256 d20result) {
+        return d20Results[d20Results.length - 1];
     }
 }
